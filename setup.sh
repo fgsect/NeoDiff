@@ -22,9 +22,6 @@ cd neo-python
 pip install -r requirements.txt
 cd ..
 
-echo "installing NeoVM using dotnetcore (make sure you have it)"
-# TODO: HOW :D
-
 echo "Done building :)"
 echo "Activate the virtualenv with:"
 echo ". .env/bin/activate
