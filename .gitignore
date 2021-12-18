@@ -1,0 +1,7 @@
+venv
+out
+.vscode
+.idea
+RESULTS
+__pycache__
+.env
