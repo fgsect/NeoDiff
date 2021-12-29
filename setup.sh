@@ -8,9 +8,9 @@ echo "building go-ethereum (install go for this)"
 make -C ./go-ethereum all
 
 echo "building openethereum (install rust for this)"
-cd ./openethereum/evmbin
+cd ./openethereum/bin/evmbin
 cargo build --release
-cd ../..
+cd ../../..
 
 echo "Installing reqs for us, creating virtualenv"
 virtualenv -p "$(command -v python3)" "$(pwd)/.env"

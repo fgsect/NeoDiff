@@ -168,7 +168,7 @@ if __name__ == "__main__":
         [
             "./openethereum/target/release/openethereum-evm",
             "--chain",
-            "./openethereum/ethcore/res/ethereum/test-specs/istanbul_test.json",
+            "./openethereum/crates/ethcore/res/chainspec/test/istanbul_test.json",
             "--gas",
             "1337",
             "--json",
