@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+
+# Creates a machine-readable csv from the RESULTS folder
+
 import os
 
 NAMES = [

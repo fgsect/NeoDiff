@@ -1,4 +1,5 @@
 """
+AFL support for python neo VM
 Run with:
 ```bash
 AFL_AUTORESUME=1 PATH="./AFLplusplus:${PATH}" py-afl-fuzz -i in -t 2000 -o out -U -m none -M main -- $(which python3) ./neo-python-VM.afl.py
@@ -19,7 +20,7 @@ import glob
 import trace
 
 import os
-sys.path.append(os.path.dirname(os.path.abspath(__file__))+'/neo-python/')
+sys.path.append(os.path.dirname(os.path.abspath(__file__))+'/../neo-python/')
 
 from neo.VM.ExecutionEngine import ExecutionEngine
 from neo.SmartContract.ApplicationEngine import ApplicationEngine

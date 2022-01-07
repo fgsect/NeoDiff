@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+
+"""
+Semantic diff fuzzer for the C# Neo VM against the NEO VM writtenn in python.
+"""
+
 import subprocess
 import random
 import struct
@@ -11,9 +16,8 @@ import secrets
 import time
 import binascii
 
-from neodiff.NeoDiff import FuzzerConfig, VMRunnerIO, NeoVmDiffGenerator
-import neodiff.NeoVmDiffGenerator
-
+from neodiff import NeoVmDiffGenerator
+from neodiff.NeoDiff import FuzzerConfig, VMRunnerIO
 
 class NeoDiffFuzzerConfig(FuzzerConfig):
     def pre_round(self):

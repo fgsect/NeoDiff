@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+
+# Fuzzer for EVM
+
 import subprocess
 import random
 import struct
@@ -13,7 +16,7 @@ import hashlib
 import binascii
 
 from neodiff.NeoDiff import FuzzerConfig, VMRunnerProcess
-import neodiff.EVMDiffGenerator
+from neodiff import EVMDiffGenerator
 
 
 class ENeoDiffConfig(FuzzerConfig):

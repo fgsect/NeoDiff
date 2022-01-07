@@ -1,4 +1,5 @@
-#!/usr/bin/env python3
+# Python specific code generators
+
 import random
 import secrets
 import sys

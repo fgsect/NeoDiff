@@ -1,3 +1,5 @@
+# Main classes for NeoDiff
+
 import subprocess
 import random
 import struct

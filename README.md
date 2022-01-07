@@ -9,9 +9,12 @@ It will mutate smart contract byte code and look for differences in the VM state
 
 To get started, run `setup.sh`.
 The script will check out Ethereum VMs in `go` (`go-ethereum`) and `rust` (`openethereum`), and install the needed python virtual env for NeoDiff.
-then, source the virtualenv using `. .env/bin/activate` and run `EVMrun.sh 1` or `EVMscale.sh [proc_count]` to start fuzzing.
+then, source the virtualenv using `. .env/bin/activate` and run `./utils/EVMrun.sh 1` or `./utils/EVMscale.sh [proc_count]` to start fuzzing.
 
-## Other Targets
+## Going from here
 Apart from EVM, NeoDiff has been tested on Neo VMs and should be trivial to port to other VMs.
-Check out `NeoVMFuzz.py` and `NeoSemanticDiffFuzzer.py` for examples.
+Check out `NeoVMFuzz.py` and `NeoSemanticDiffFuzzer.py` for other examples.
+
+After a run, the results will be generated in `../RESULTS`.
+`./utils` contains some helpful scripts for evaulation.
 

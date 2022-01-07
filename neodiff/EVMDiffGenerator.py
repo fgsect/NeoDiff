@@ -1,3 +1,5 @@
+# Ethereum specific bytecode generator
+
 import random
 import struct
 import os
@@ -5,7 +7,7 @@ import binascii
 from logzero import logger
 import secrets
 import json
-from neodiff.NeoPyDiffGenerator import SCInteger
+from neodiff.PyDiffGenerator import SCInteger
 
 # code = os.urandom(0xfff).hex()
 

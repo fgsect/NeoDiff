@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 
-# Semantic diff fuzzer for CPython against the neo boa python VM
+"""
+Semantic diff fuzzer for CPython against the neo boa python VM
+"""
 
-from neodiff.NeoPyDiffGenerator import run
-from neodiff.NeoDiff import run_vm, python
+from neodiff import PyDiffGenerator
+from neodiff import NeoDiff
 from boa.compiler import Compiler
 import random
 import secrets
@@ -16,7 +18,7 @@ from logzero import logger
 while True:
     seed = secrets.randbelow(1 << 32)
     # logger.info()
-    code = run(
+    code = PyDiffGenerator.run(
         seed=seed,
         illegal=False,
         target="py",
@@ -51,13 +53,13 @@ def Main():
         # logger.error("python code couldn't compile")
         continue
     # print(code)
-    hashes, neo_ret = run_vm(code, 2, python)
+    hashes, neo_ret = NeoDiff.run_vm(code, 2, NeoDiff.python)
 
     # print(hashes)
     if len(python_ret) == 2 and len(neo_ret) == 2:
         if python_ret[0] != neo_ret[0]:
             logger.info(
-                "{} vs. {} | python NeoPyDiffGenerator.py -s {}".format(
+                "{} vs. {} | python PyDiffGenerator.py -s {}".format(
                     python_ret, neo_ret, seed
                 )
             )
@@ -131,7 +133,7 @@ def Main():
                 ):
                     continue
                 logger.info(
-                    "{} vs. {} | python NeoPyDiffGenerator.py -s {}".format(
+                    "{} vs. {} | python PyDiffGenerator.py -s {}".format(
                         python_ret, neo_ret, seed
                     )
                 )

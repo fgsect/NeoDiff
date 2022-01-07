@@ -1,3 +1,7 @@
+#!/usr/bin/env python3
+
+# Parses the results of a diff run for eval/postprocessing
+
 import ast
 import struct
 

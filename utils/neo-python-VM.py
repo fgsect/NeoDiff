@@ -13,7 +13,7 @@ import trace
 
 import os
 
-sys.path.append(os.path.dirname(os.path.abspath(__file__)) + "/neo-python/")
+sys.path.append(os.path.dirname(os.path.abspath(__file__)) + "/../neo-python/")
 
 from neo.VM.ExecutionEngine import ExecutionEngine
 from neo.SmartContract.ApplicationEngine import ApplicationEngine
