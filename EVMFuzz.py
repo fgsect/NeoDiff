@@ -12,8 +12,8 @@ import time
 import hashlib
 import binascii
 
-from NeoDiff import FuzzerConfig, VMRunnerProcess
-import EVMDiffGenerator
+from neodiff.NeoDiff import FuzzerConfig, VMRunnerProcess
+import neodiff.EVMDiffGenerator
 
 
 class ENeoDiffConfig(FuzzerConfig):

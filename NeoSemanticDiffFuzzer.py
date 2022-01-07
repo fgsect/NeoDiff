@@ -1,5 +1,9 @@
-from NeoPyDiffGenerator import run
-from NeoNeoDiff import run_vm, python
+#!/usr/bin/env python3
+
+# Semantic diff fuzzer for CPython against the neo boa python VM
+
+from neodiff.NeoPyDiffGenerator import run
+from neodiff.NeoDiff import run_vm, python
 from boa.compiler import Compiler
 import random
 import secrets

@@ -2,7 +2,7 @@
 import os
 
 NAMES = [
-    "./RESULTS/A_20p2000"
+    "../RESULTS/A_20p2000"
 ]  # 'a20p2000'] #'2k20o1p', '2k20o20p', '2k500o1p', '2k500o20p']
 
 DATA = [

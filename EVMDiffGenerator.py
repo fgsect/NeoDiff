@@ -5,7 +5,7 @@ import binascii
 from logzero import logger
 import secrets
 import json
-from NeoPyDiffGenerator import SCInteger
+from neodiff.NeoPyDiffGenerator import SCInteger
 
 # code = os.urandom(0xfff).hex()
 

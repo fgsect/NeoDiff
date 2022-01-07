@@ -11,8 +11,8 @@ import secrets
 import time
 import binascii
 
-from NeoDiff import FuzzerConfig, VMRunnerIO
-import NeoVmDiffGenerator
+from neodiff.NeoDiff import FuzzerConfig, VMRunnerIO, NeoVmDiffGenerator
+import neodiff.NeoVmDiffGenerator
 
 
 class NeoDiffFuzzerConfig(FuzzerConfig):
