@@ -24,4 +24,4 @@ cd ..
 
 echo "Done building :)"
 echo "Activate the virtualenv with:"
-echo ". .env/bin/activate
+echo ". .env/bin/activate"
