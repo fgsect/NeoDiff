@@ -1,0 +1,32 @@
+[package]
+name = "generic_inmemory"
+version = "0.7.1"
+authors = ["Andrea Fioraldi <andreafioraldi@gmail.com>", "Dominik Maier <domenukk@gmail.com>"]
+edition = "2021"
+
+[features]
+default = ["std"]
+std = []
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3
+debug = true
+
+[build-dependencies]
+cc = { version = "1.0", features = ["parallel"] }
+which = { version = "4.0.2" }
+num_cpus = "1.0"
+
+[dependencies]
+libafl = { path = "../../LibAFL/libafl/" }
+libafl_targets = { path = "../../LibAFL/libafl_targets/", features = ["sancov_pcguard_hitcounts", "sancov_cmplog", "libfuzzer"] }
+# TODO Include it only when building cc
+clap = { version = "3.0", features = ["derive"] }
+mimalloc = { version = "*", default-features = false }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0" }
+ahash = { version = "0.7" }
+packed_struct = "0.10"
+bit-vec = { version = "0.6", features = ["serde"] }
