@@ -22,10 +22,7 @@ use libafl::{
         shmem::{ShMemProvider, StdShMemProvider},
         tuples::{tuple_list, Merge, Named},
     },
-    corpus::{
-        Corpus, InMemoryCorpus, IndexesLenTimeMinimizerCorpusScheduler, OnDiskCorpus,
-        QueueCorpusScheduler,
-    },
+    corpus::{Corpus, InMemoryCorpus, OnDiskCorpus},
     events::{EventConfig, EventFirer},
     executors::{CommandExecutor, DiffExecutor},
     feedbacks::{differential::DiffResult, DiffFeedback, Feedback, FeedbackState},
@@ -38,6 +35,7 @@ use libafl::{
         token_mutations::Tokens,
     },
     observers::{ObserversTuple, StdOutObserver},
+    schedulers::{IndexesLenTimeMinimizerScheduler, QueueScheduler},
     stages::StdMutationalStage,
     state::{HasClientPerfMonitor, HasCorpus, HasMetadata, StdState},
     Error,
@@ -372,7 +370,7 @@ pub fn main() {
         }
 
         // A minimization+queue policy to get testcasess from the corpus
-        let scheduler = IndexesLenTimeMinimizerCorpusScheduler::new(QueueCorpusScheduler::new());
+        let scheduler = IndexesLenTimeMinimizerScheduler::new(QueueScheduler::new());
 
         // A fuzzer with feedbacks and a corpus scheduler
         let mut fuzzer = StdFuzzer::new(scheduler, th_feedback, objective);
