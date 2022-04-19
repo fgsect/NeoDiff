@@ -11,24 +11,40 @@ use core::time::Duration;
 use packed_struct::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json;
-use std::{collections::BTreeMap, env, hash::Hasher, net::SocketAddr, path::PathBuf};
+use std::{
+    cmp::min,
+    collections::BTreeMap,
+    env,
+    fs::File,
+    hash::Hasher,
+    io::Read,
+    marker::PhantomData,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+};
 
 use libafl::{
     bolts::{
         current_nanos,
+        fs::write_file_atomic,
         launcher::Launcher,
         os::Cores,
+        ownedref::OwnedSlice,
+        rands::Rand,
         rands::StdRand,
         shmem::{ShMemProvider, StdShMemProvider},
         tuples::{tuple_list, Merge, Named},
+        HasLen,
     },
     corpus::{Corpus, InMemoryCorpus, OnDiskCorpus},
+    events::SimpleEventManager,
     events::{EventConfig, EventFirer},
     executors::{CommandExecutor, DiffExecutor},
     feedbacks::{differential::DiffResult, DiffFeedback, Feedback, FeedbackState},
     fuzzer::{Fuzzer, StdFuzzer},
+    generators::Generator,
     generators::RandBytesGenerator,
-    inputs::Input,
+    inputs::{HasBytesVec, HasTargetBytes, Input},
     monitors::MultiMonitor,
     mutators::{
         scheduled::{havoc_mutations, tokens_mutations, StdScheduledMutator},
@@ -37,7 +53,7 @@ use libafl::{
     observers::{ObserversTuple, StdOutObserver},
     schedulers::{IndexesLenTimeMinimizerScheduler, QueueScheduler},
     stages::StdMutationalStage,
-    state::{HasClientPerfMonitor, HasCorpus, HasMetadata, StdState},
+    state::{HasClientPerfMonitor, HasCorpus, HasMetadata, HasRand, StdState},
     Error,
 };
 
@@ -53,7 +69,7 @@ fn timeout_from_millis_str(time: &str) -> Result<Duration, Error> {
     author = "Andrea Fioraldi <andreafioraldi@gmail.com>, Dominik Maier <domenukk@gmail.com>"
 )]
 struct Opt {
-    #[clap(
+    /*#[clap(
         short,
         long,
         parse(try_from_str = Cores::from_cmdline),
@@ -77,8 +93,7 @@ struct Opt {
         help = "Specify a remote broker",
         name = "REMOTE"
     )]
-    remote_broker_addr: Option<SocketAddr>,
-
+    remote_broker_addr: Option<SocketAddr>,*/
     #[clap(
         parse(try_from_str),
         short,
@@ -117,6 +132,126 @@ struct Opt {
         multiple_occurrences = true
     )]
     tokens: Vec<PathBuf>,
+}
+
+/// A bytes input is the basic input
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct HexInput {
+    /// The raw input bytes
+    bytes: Vec<u8>,
+}
+
+impl Input for HexInput {
+    #[cfg(feature = "std")]
+    /// Write this input to the file
+    fn to_file<P>(&self, path: P) -> Result<(), Error>
+    where
+        P: AsRef<Path>,
+    {
+        write_file_atomic(path, &self.bytes)
+    }
+
+    /// Load the content of this input from a file
+    #[cfg(feature = "std")]
+    fn from_file<P>(path: P) -> Result<Self, Error>
+    where
+        P: AsRef<Path>,
+    {
+        let mut file = File::open(path)?;
+        let mut bytes: Vec<u8> = vec![];
+        file.read_to_end(&mut bytes)?;
+        Ok(HexInput::new(bytes))
+    }
+
+    /// Generate a name for this input
+    fn generate_name(&self, _idx: usize) -> String {
+        let mut hasher = AHasher::new_with_keys(0, 0);
+        hasher.write(self.bytes());
+        format!("{:016x}", hasher.finish())
+    }
+}
+
+impl HasBytesVec for HexInput {
+    #[inline]
+    fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    #[inline]
+    fn bytes_mut(&mut self) -> &mut Vec<u8> {
+        &mut self.bytes
+    }
+}
+
+impl HasTargetBytes for HexInput {
+    #[inline]
+    fn target_bytes(&self) -> OwnedSlice<u8> {
+        let h = hex::encode(&self.bytes).into_bytes();
+        OwnedSlice::from(h)
+    }
+}
+
+impl HasLen for HexInput {
+    #[inline]
+    fn len(&self) -> usize {
+        self.bytes.len()
+    }
+}
+
+impl HexInput {
+    /// Creates a new bytes input using the given bytes
+    #[must_use]
+    pub fn new(bytes: Vec<u8>) -> Self {
+        Self { bytes }
+    }
+}
+
+const DUMMY_BYTES_MAX: usize = 64;
+
+#[derive(Clone, Debug)]
+/// Generates random bytes
+pub struct RandHexGenerator<S>
+where
+    S: HasRand,
+{
+    max_size: usize,
+    phantom: PhantomData<S>,
+}
+
+impl<S> Generator<HexInput, S> for RandHexGenerator<S>
+where
+    S: HasRand,
+{
+    fn generate(&mut self, state: &mut S) -> Result<HexInput, Error> {
+        let mut size = state.rand_mut().below(self.max_size as u64);
+        if size == 0 {
+            size = 1;
+        }
+        let random_bytes: Vec<u8> = (0..size)
+            .map(|_| state.rand_mut().below(256) as u8)
+            .collect();
+        Ok(HexInput::new(random_bytes))
+    }
+
+    /// Generates up to `DUMMY_BYTES_MAX` non-random dummy bytes (0)
+    fn generate_dummy(&self, _state: &mut S) -> HexInput {
+        let size = min(self.max_size, DUMMY_BYTES_MAX);
+        HexInput::new(vec![0; size])
+    }
+}
+
+impl<S> RandHexGenerator<S>
+where
+    S: HasRand,
+{
+    /// Returns a new [`RandBytesGenerator`], generating up to `max_size` random bytes.
+    #[must_use]
+    pub fn new(max_size: usize) -> Self {
+        Self {
+            max_size,
+            phantom: PhantomData,
+        }
+    }
 }
 
 // {"depth":1,"gas":"0x1337","gasCost":"0x0","memory":"0x","op":34,"opName":"","pc":0,"stack":[],"storage":{}}
@@ -180,7 +315,7 @@ impl EVMTypeHashFeedback {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct EVMFeedbackState {
+pub struct EVMFeedbackState {
     name: String,
     history: BitVec<u32>,
 }
@@ -216,14 +351,13 @@ where
 
         // generate a filename
         let mut checksum = AHasher::default();
-        let mut typehash = 0;
+        let mut res = false;
 
-        let stdout = observers
+        let stdout_observer = observers
             .match_name::<StdOutObserver>("StdOutObserver")
-            .unwrap()
-            .stdout
             .unwrap();
-
+        let stdout = stdout_observer.stdout.as_ref().unwrap();
+        eprintln!(">>> {:?}", &stdout);
         let mut is_error = false;
 
         let json_log: Vec<EVMLog> = stdout
@@ -233,13 +367,16 @@ where
             .map(|res| res.unwrap())
             .collect();
 
-        json_log.as_slice().windows(2).for_each(|[curr, next]| {
-            let type_hash = TypeHash::default();
+        //json_log.as_slice().windows(2).for_each(|[curr, next]| {
+        for window in json_log.as_slice().windows(2) {
+            let curr = &window[0];
+            let next = &window[1];
+            let mut type_hash = TypeHash::default();
 
             match curr {
                 EVMLog::Operation { op, .. } if *op == 253 => {
                     // ignore REVERT opcode
-                    return;
+                    continue;
                 }
                 EVMLog::Operation { op, gas_cost, .. } => {
                     checksum.write(&[*op]);
@@ -264,12 +401,13 @@ where
                                     *pos = 5;
                                 }
 
-                                if pos == &mut type_hash.t1 {
+                                /*if pos == &mut type_hash.t1 {
                                     pos = &mut type_hash.t2;
                                 } else {
                                     // we alrady have two params.
                                     break;
-                                }
+                                }*/
+                                pos = &mut type_hash.t2;
                             }
                             if memory.len() > 2 {
                                 *pos |= 6;
@@ -288,9 +426,17 @@ where
             }
             // Todo: write log to somewhere?
             // Tdoo2: Find out if interesting.
-        });
 
-        Ok(false)
+            let arr = type_hash.pack().unwrap();
+            let idx = (((arr[0] as u16) << 8) | arr[1] as u16) as usize;
+
+            if feedback_state.history.get(idx).unwrap() == false {
+                res = true;
+                feedback_state.history.set(idx, true);
+            }
+        }
+
+        Ok(res)
     }
 
     fn init_state(&mut self) -> Result<Self::FeedbackState, Error> {
@@ -311,9 +457,9 @@ pub fn main() {
 
     let opt = Opt::parse();
 
-    let cores = opt.cores;
-    let broker_port = opt.broker_port;
-    let remote_broker_addr = opt.remote_broker_addr;
+    //let cores = opt.cores;
+    //let broker_port = opt.broker_port;
+    //let remote_broker_addr = opt.remote_broker_addr;
     let input_dirs = opt.input;
     let output_dir = opt.output;
     let token_files = opt.tokens;
@@ -324,28 +470,30 @@ pub fn main() {
     let shmem_provider = StdShMemProvider::new().expect("Failed to init shared memory");
 
     let monitor = MultiMonitor::new(|s| println!("{}", s));
+    let mut mgr = SimpleEventManager::new(monitor);
 
-    let mut run_client = |state: Option<StdState<_, _, _, _, _, _>>, mut mgr, _core_id| {
-        let stdout1 = StdOutObserver::new("StdOutObserver".into());
-        let stdout2 = StdOutObserver::new("StdOutObserver".into());
+    //let mut run_client = |state: Option<StdState<_, _, _, _, _, _>>, mut mgr, _core_id| {
+    let stdout1 = StdOutObserver::new("StdOutObserver1".into());
+    let stdout2 = StdOutObserver::new("StdOutObserver2".into());
 
-        // Feedback to rate the interestingness of an input
-        // This one is composed by two Feedbacks in OR
-        let has_diff = DiffFeedback::new("differ", &stdout1, &stdout2, |o1, o2| {
-            if o1 == o2 {
-                DiffResult::Equal
-            } else {
-                DiffResult::Diff
-            }
-        })?;
+    // Feedback to rate the interestingness of an input
+    // This one is composed by two Feedbacks in OR
+    let mut has_diff = DiffFeedback::new("differ", &stdout1, &stdout2, |o1, o2| {
+        if o1 == o2 {
+            DiffResult::Equal
+        } else {
+            DiffResult::Diff
+        }
+    })
+    .unwrap();
 
-        // A feedback to choose if an input is a solution or not
-        let objective = has_diff;
+    // A feedback to choose if an input is a solution or not
+    let mut objective = has_diff;
 
-        let mut th_feedback = EVMTypeHashFeedback::new("evm_typehash", &stdout1);
+    let mut th_feedback = EVMTypeHashFeedback::new("evm_typehash", &stdout1);
 
-        // If not restarting, create a State from scratch
-        let mut state = state.unwrap_or_else(|| {
+    // If not restarting, create a State from scratch
+    let mut state = //state.unwrap_or_else(|| {
             StdState::new(
                 // RNG
                 StdRand::with_seed(current_nanos()),
@@ -360,95 +508,98 @@ pub fn main() {
                 &mut objective,
             )
             .unwrap()
-        });
+        //});
+        ;
 
-        // Create a dictionary if not existing
-        if state.metadata().get::<Tokens>().is_none() {
-            for tokens_file in &token_files {
-                state.add_metadata(Tokens::from_file(tokens_file)?);
-            }
+    // Create a dictionary if not existing
+    if state.metadata().get::<Tokens>().is_none() {
+        for tokens_file in &token_files {
+            state.add_metadata(Tokens::from_file(tokens_file).unwrap());
         }
+    }
 
-        // A minimization+queue policy to get testcasess from the corpus
-        let scheduler = IndexesLenTimeMinimizerScheduler::new(QueueScheduler::new());
+    // A minimization+queue policy to get testcasess from the corpus
+    let scheduler = IndexesLenTimeMinimizerScheduler::new(QueueScheduler::new());
 
-        // A fuzzer with feedbacks and a corpus scheduler
-        let mut fuzzer = StdFuzzer::new(scheduler, th_feedback, objective);
+    // A fuzzer with feedbacks and a corpus scheduler
+    let mut fuzzer = StdFuzzer::new(scheduler, th_feedback, objective);
 
-        let ce1 = CommandExecutor::builder()
-            .program("./go-ethereum/build/bin/evm")
-            .args(&[
-                "--json",
-                "--sender",
-                "0x00",
-                "--receiver",
-                "0x00",
-                "--gas",
-                "0x1337",
-                "--code",
-            ])
-            .arg_input_arg()
-            .build(())?;
+    let ce1 = CommandExecutor::builder()
+        .program("./go-ethereum/build/bin/evm")
+        .args(&[
+            "--json",
+            "--sender",
+            "0x00",
+            "--receiver",
+            "0x00",
+            "--gas",
+            "0x1337",
+            "--code",
+        ])
+        .arg_input_arg()
+        .build(tuple_list!(stdout1, stdout2))
+        .unwrap();
 
-        let ce2 = CommandExecutor::builder()
-            .program("./openethereum/target/release/openethereum-evm")
-            .args(&[
-                "--chain",
-                "./openethereum/crates/ethcore/res/chainspec/test/istanbul_test.json",
-                "--gas",
-                "1337",
-                "--json",
-                "--code",
-            ])
-            .arg_input_arg()
-            .build(())?;
+    let ce2 = CommandExecutor::builder()
+        .program("./openethereum/target/release/openethereum-evm")
+        .args(&[
+            "--chain",
+            "./openethereum/crates/ethcore/res/chainspec/test/istanbul_test.json",
+            "--gas",
+            "1337",
+            "--json",
+            "--code",
+        ])
+        .arg_input_arg()
+        .build(tuple_list!())
+        .unwrap();
 
-        let diff_executor = DiffExecutor::new(ce1, ce2);
+    let mut diff_executor = DiffExecutor::new(ce1, ce2);
 
-        // Setup a basic mutator
-        let mutator = StdScheduledMutator::new(havoc_mutations().merge(tokens_mutations()));
-        let mutational = StdMutationalStage::new(mutator);
+    // Setup a basic mutator
+    let mutator = StdScheduledMutator::new(havoc_mutations().merge(tokens_mutations()));
+    let mutational = StdMutationalStage::new(mutator);
 
-        // The order of the stages matter!
-        let mut stages = tuple_list!(mutational);
+    // The order of the stages matter!
+    let mut stages = tuple_list!(mutational);
 
-        // In case the corpus is empty (on first run), reset
-        if state.corpus().count() < 1 {
-            if input_dirs.is_empty() {
-                // Generator of printable bytearrays of max size 32
-                let mut generator = RandBytesGenerator::new(32);
+    // In case the corpus is empty (on first run), reset
+    if state.corpus().count() < 1 {
+        if input_dirs.is_empty() {
+            // Generator of printable bytearrays of max size 32
+            let mut generator = RandHexGenerator::new(32);
 
-                // Generate 8 initial inputs
-                state
-                    .generate_initial_inputs(
-                        &mut fuzzer,
-                        &mut diff_executor,
-                        &mut generator,
-                        &mut mgr,
-                        8,
-                    )
-                    .expect("Failed to generate the initial corpus");
-                println!(
-                    "We imported {} inputs from the generator.",
-                    state.corpus().count()
-                );
-            } else {
-                println!("Loading from {:?}", &input_dirs);
-                // Load from disk
-                state
-                    .load_initial_inputs(&mut fuzzer, &mut diff_executor, &mut mgr, &input_dirs)
-                    .unwrap_or_else(|_| {
-                        panic!("Failed to load initial corpus at {:?}", &input_dirs)
-                    });
-                println!("We imported {} inputs from disk.", state.corpus().count());
-            }
+            // Generate 8 initial inputs
+            state
+                .generate_initial_inputs(
+                    &mut fuzzer,
+                    &mut diff_executor,
+                    &mut generator,
+                    &mut mgr,
+                    8,
+                )
+                .expect("Failed to generate the initial corpus");
+            println!(
+                "We imported {} inputs from the generator.",
+                state.corpus().count()
+            );
+        } else {
+            println!("Loading from {:?}", &input_dirs);
+            // Load from disk
+            state
+                .load_initial_inputs(&mut fuzzer, &mut diff_executor, &mut mgr, &input_dirs)
+                .unwrap_or_else(|_| panic!("Failed to load initial corpus at {:?}", &input_dirs));
+            println!("We imported {} inputs from disk.", state.corpus().count());
         }
+    }
 
-        fuzzer.fuzz_loop(&mut stages, &mut diff_executor, &mut state, &mut mgr)?;
-        Ok(())
-    };
+    fuzzer
+        .fuzz_loop(&mut stages, &mut diff_executor, &mut state, &mut mgr)
+        .unwrap();
+    //Ok(())
+    //};
 
-    match Launcher::builder()
+    /*match Launcher::builder()
         .shmem_provider(shmem_provider)
         .configuration(EventConfig::from_name("default"))
         .monitor(monitor)
@@ -462,5 +613,5 @@ pub fn main() {
     {
         Ok(_) | Err(Error::ShuttingDown) => (),
         Err(e) => panic!("{:?}", e),
-    };
+    };*/
 }

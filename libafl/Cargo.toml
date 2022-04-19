@@ -30,3 +30,4 @@ serde_json = { version = "1.0" }
 ahash = { version = "0.7" }
 packed_struct = "0.10"
 bit-vec = { version = "0.6", features = ["serde"] }
+hex = "0.4.3"
