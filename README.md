@@ -18,3 +18,8 @@ Check out `NeoVMFuzz.py` and `NeoSemanticDiffFuzzer.py` for other examples.
 After a run, the results will be generated in `../RESULTS`.
 `./utils` contains some helpful scripts for evaulation.
 
+## LibAFL
+
+```
+cargo run --manifest-path=./libafl/Cargo.toml
+```

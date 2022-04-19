@@ -256,9 +256,10 @@ where
 
 // {"depth":1,"gas":"0x1337","gasCost":"0x0","memory":"0x","op":34,"opName":"","pc":0,"stack":[],"storage":{}}
 // {"error":"EVM: Bad instruction 22","gasUsed":"0x1337","time":141}
-#[derive(Serialize, Deserialize, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
 #[serde(untagged, rename_all = "camelCase")]
 enum EVMLog {
+    #[serde(rename_all = "camelCase")]
     Operation {
         depth: u8,
         gas: String,
@@ -268,13 +269,20 @@ enum EVMLog {
         op_name: String,
         pc: u64,
         stack: Vec<String>,
+        #[serde(default)]
         storage: BTreeMap<String, String>,
+        #[serde(default)]
+        error: Option<String>,
+        #[serde(flatten)]
+        extra: std::collections::HashMap<String, serde_json::Value>,
     },
+    #[serde(rename_all = "camelCase")]
     Error {
         error: String,
         gas_used: String,
         time: u64,
     },
+    #[serde(rename_all = "camelCase")]
     Ouptut {
         output: String,
         gas_used: String,
@@ -350,14 +358,13 @@ where
         // from https://github.com/fgsect/NeoDiff/blob/ad5d1250238fcb3bc8a8ddfe0d0dcefd5703324b/EVMFuzz.py#L40
 
         // generate a filename
-        let mut checksum = AHasher::default();
+        //let mut checksum = AHasher::default();
         let mut res = false;
 
         let stdout_observer = observers
-            .match_name::<StdOutObserver>("StdOutObserver")
+            .match_name::<StdOutObserver>("StdOutObserver2")
             .unwrap();
         let stdout = stdout_observer.stdout.as_ref().unwrap();
-        eprintln!(">>> {:?}", &stdout);
         let mut is_error = false;
 
         let json_log: Vec<EVMLog> = stdout
@@ -379,8 +386,8 @@ where
                     continue;
                 }
                 EVMLog::Operation { op, gas_cost, .. } => {
-                    checksum.write(&[*op]);
-                    checksum.write(gas_cost.as_bytes());
+                    //checksum.write(&[*op]);
+                    //checksum.write(gas_cost.as_bytes());
                     match next {
                         EVMLog::Error { error, .. } => {
                             is_error = true;
@@ -390,6 +397,7 @@ where
                         } => {
                             let mut pos = &mut type_hash.t1;
                             for item in stack {
+                                //checksum.write(item.as_bytes());
                                 if u32::from_str_radix(item, 16).is_ok() {
                                     *pos = 1;
                                 } else if item.len() == 40 || item.len() == 42 {
@@ -412,7 +420,7 @@ where
                             if memory.len() > 2 {
                                 *pos |= 6;
                             }
-                            checksum.write(memory.as_bytes());
+                            //checksum.write(memory.as_bytes());
                         }
                         EVMLog::Ouptut { .. } => (),
                     }
@@ -430,6 +438,8 @@ where
             let arr = type_hash.pack().unwrap();
             let idx = (((arr[0] as u16) << 8) | arr[1] as u16) as usize;
 
+            // eprintln!("IDX {} {}", idx, feedback_state.history.get(idx).unwrap());
+
             if feedback_state.history.get(idx).unwrap() == false {
                 res = true;
                 feedback_state.history.set(idx, true);
@@ -445,6 +455,64 @@ where
             history: BitVec::from_elem(u16::MAX.into(), false),
         })
     }
+}
+
+fn observer_hash(stdout_observer: &StdOutObserver) -> u64 {
+    let mut is_error = false;
+    let mut checksum = AHasher::default();
+
+    eprintln!(
+        ">>> {} {}",
+        stdout_observer.name(),
+        &stdout_observer.stdout.as_ref().unwrap()
+    );
+    let stdout = stdout_observer.stdout.as_ref().unwrap();
+    let json_log: Vec<EVMLog> = stdout
+        .split('\n')
+        //.map(|line| { let x = serde_json::from_str(line); eprintln!("{:?} {}", &x, line); x })
+        .map(|line| serde_json::from_str(line))
+        .filter(|x| x.is_ok())
+        .map(|res| res.unwrap())
+        .collect();
+    eprintln!("JSON {:?}", &json_log);
+
+    for window in json_log.as_slice().windows(2) {
+        let curr = &window[0];
+        let next = &window[1];
+
+        match curr {
+            EVMLog::Operation { op, .. } if *op == 253 => {
+                // ignore REVERT opcode
+                continue;
+            }
+            EVMLog::Operation { op, gas_cost, .. } => {
+                checksum.write(&[*op]);
+                checksum.write(gas_cost.as_bytes());
+                match next {
+                    EVMLog::Error { error, .. } => {
+                        is_error = true;
+                    }
+                    EVMLog::Operation {
+                        memory, op, stack, ..
+                    } => {
+                        for item in stack {
+                            checksum.write(item.as_bytes());
+                        }
+                        checksum.write(memory.as_bytes());
+                    }
+                    EVMLog::Ouptut { .. } => (),
+                }
+            }
+            EVMLog::Error { error, .. } => {
+                if error.len() > 0 {
+                    is_error = true;
+                }
+            }
+            _ => (),
+        }
+    }
+
+    checksum.finish()
 }
 
 /// The main fn, `no_mangle` as it is a C symbol
@@ -476,19 +544,15 @@ pub fn main() {
     let stdout1 = StdOutObserver::new("StdOutObserver1".into());
     let stdout2 = StdOutObserver::new("StdOutObserver2".into());
 
-    // Feedback to rate the interestingness of an input
-    // This one is composed by two Feedbacks in OR
-    let mut has_diff = DiffFeedback::new("differ", &stdout1, &stdout2, |o1, o2| {
-        if o1 == o2 {
+    let mut objective = DiffFeedback::new("differ", &stdout1, &stdout2, |o1, o2| {
+        if observer_hash(o1) == observer_hash(o2) {
             DiffResult::Equal
         } else {
+            eprintln!("DIFFFFFF");
             DiffResult::Diff
         }
     })
     .unwrap();
-
-    // A feedback to choose if an input is a solution or not
-    let mut objective = has_diff;
 
     let mut th_feedback = EVMTypeHashFeedback::new("evm_typehash", &stdout1);
 
@@ -519,7 +583,7 @@ pub fn main() {
     }
 
     // A minimization+queue policy to get testcasess from the corpus
-    let scheduler = IndexesLenTimeMinimizerScheduler::new(QueueScheduler::new());
+    let scheduler = QueueScheduler::new();
 
     // A fuzzer with feedbacks and a corpus scheduler
     let mut fuzzer = StdFuzzer::new(scheduler, th_feedback, objective);
@@ -537,7 +601,9 @@ pub fn main() {
             "--code",
         ])
         .arg_input_arg()
-        .build(tuple_list!(stdout1, stdout2))
+        .arg("run")
+        .stdout_observer("StdOutObserver1".into())
+        .build(tuple_list!(stdout1))
         .unwrap();
 
     let ce2 = CommandExecutor::builder()
@@ -551,7 +617,8 @@ pub fn main() {
             "--code",
         ])
         .arg_input_arg()
-        .build(tuple_list!())
+        .stdout_observer("StdOutObserver2".into())
+        .build(tuple_list!(stdout2))
         .unwrap();
 
     let mut diff_executor = DiffExecutor::new(ce1, ce2);
