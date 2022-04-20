@@ -40,6 +40,7 @@ use libafl::{
     events::SimpleEventManager,
     events::{EventConfig, EventFirer},
     executors::{CommandExecutor, DiffExecutor},
+    feedback_and_fast,
     feedbacks::{differential::DiffResult, DiffFeedback, Feedback, FeedbackState},
     fuzzer::{Fuzzer, StdFuzzer},
     generators::Generator,
@@ -257,37 +258,30 @@ where
 // {"depth":1,"gas":"0x1337","gasCost":"0x0","memory":"0x","op":34,"opName":"","pc":0,"stack":[],"storage":{}}
 // {"error":"EVM: Bad instruction 22","gasUsed":"0x1337","time":141}
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
-#[serde(untagged, rename_all = "camelCase")]
-enum EVMLog {
-    #[serde(rename_all = "camelCase")]
-    Operation {
-        depth: u8,
-        gas: String,
-        gas_cost: String,
-        memory: String,
-        op: u8,
-        op_name: String,
-        pc: u64,
-        stack: Vec<String>,
-        #[serde(default)]
-        storage: BTreeMap<String, String>,
-        #[serde(default)]
-        error: Option<String>,
-        #[serde(flatten)]
-        extra: std::collections::HashMap<String, serde_json::Value>,
-    },
-    #[serde(rename_all = "camelCase")]
-    Error {
-        error: String,
-        gas_used: String,
-        time: u64,
-    },
-    #[serde(rename_all = "camelCase")]
-    Ouptut {
-        output: String,
-        gas_used: String,
-        time: u64,
-    },
+#[serde(rename_all = "camelCase")]
+struct EVMLog {
+    //depth: u8,
+    //gas: String,
+    //op_name: String,
+    //pc: u64,
+    #[serde(default)]
+    error: Option<String>,
+    #[serde(default)]
+    gas_cost: Option<String>,
+    #[serde(default)]
+    memory: Option<String>,
+    #[serde(default)]
+    output: Option<String>,
+    #[serde(default)]
+    op: Option<u8>,
+    #[serde(default)]
+    stack: Option<Vec<String>>,
+    #[serde(default)]
+    storage: BTreeMap<String, String>,
+    //#[serde(default)]
+    //error: Option<String>,
+    #[serde(flatten)]
+    extra: std::collections::HashMap<String, serde_json::Value>,
 }
 
 #[derive(PackedStruct, Clone, Default)]
@@ -306,6 +300,7 @@ pub struct TypeHash {
 #[derive(Debug, Clone)]
 pub struct EVMTypeHashFeedback {
     name: String,
+    stdout_name: String,
 }
 
 impl Named for EVMTypeHashFeedback {
@@ -318,6 +313,7 @@ impl EVMTypeHashFeedback {
     pub fn new(name: &str, stdout: &StdOutObserver) -> Self {
         Self {
             name: name.to_string(),
+            stdout_name: stdout.name().to_string(),
         }
     }
 }
@@ -362,7 +358,7 @@ where
         let mut res = false;
 
         let stdout_observer = observers
-            .match_name::<StdOutObserver>("StdOutObserver2")
+            .match_name::<StdOutObserver>(&self.stdout_name)
             .unwrap();
         let stdout = stdout_observer.stdout.as_ref().unwrap();
         let mut is_error = false;
@@ -374,66 +370,60 @@ where
             .map(|res| res.unwrap())
             .collect();
 
-        //json_log.as_slice().windows(2).for_each(|[curr, next]| {
         for window in json_log.as_slice().windows(2) {
             let curr = &window[0];
             let next = &window[1];
+            if curr.op.is_none() {
+                continue;
+            }
+            let op = curr.op.unwrap();
+            if op == 253 || op == 0 {
+                // ignore REVERT opcode
+                continue;
+            }
+            if curr.gas_cost.is_none() {
+                continue;
+            }
+            // update hash
+
             let mut type_hash = TypeHash::default();
 
-            match curr {
-                EVMLog::Operation { op, .. } if *op == 253 => {
-                    // ignore REVERT opcode
-                    continue;
-                }
-                EVMLog::Operation { op, gas_cost, .. } => {
-                    //checksum.write(&[*op]);
-                    //checksum.write(gas_cost.as_bytes());
-                    match next {
-                        EVMLog::Error { error, .. } => {
-                            is_error = true;
-                        }
-                        EVMLog::Operation {
-                            memory, op, stack, ..
-                        } => {
-                            let mut pos = &mut type_hash.t1;
-                            for item in stack {
-                                //checksum.write(item.as_bytes());
-                                if u32::from_str_radix(item, 16).is_ok() {
-                                    *pos = 1;
-                                } else if item.len() == 40 || item.len() == 42 {
-                                    *pos = 2;
-                                } else if item.len() > 42 {
-                                    *pos = 3;
-                                // ignoring elif len(item) <= 0xFFFFFFFFFFFFFFFF:
-                                } else if item.len() < 40 {
-                                    *pos = 5;
-                                }
+            if (next.error.is_some() && next.error.as_ref().unwrap().len() > 0)
+                && (next.op.is_none() || next.output.is_some())
+            {
+                is_error = true;
+            } else if curr.error.is_some() && curr.error.as_ref().unwrap().len() > 0 {
+                is_error = true;
+            } else if curr.stack.is_some() && next.op.is_some() && next.op.unwrap() != 0 {
+                let mut pos = &mut type_hash.t1;
+                for item in curr.stack.as_ref().unwrap().iter().rev() {
+                    //checksum.write(item.as_bytes());
+                    if u32::from_str_radix(item, 16).is_ok() {
+                        *pos = 1;
+                    } else if item.len() == 40 || item.len() == 42 {
+                        *pos = 2;
+                    } else if item.len() > 42 {
+                        *pos = 3;
+                    // ignoring elif len(item) <= 0xFFFFFFFFFFFFFFFF:
+                    } else if item.len() < 40 {
+                        *pos = 5;
+                    }
 
-                                /*if pos == &mut type_hash.t1 {
-                                    pos = &mut type_hash.t2;
-                                } else {
-                                    // we alrady have two params.
-                                    break;
-                                }*/
-                                pos = &mut type_hash.t2;
-                            }
-                            if memory.len() > 2 {
-                                *pos |= 6;
-                            }
-                            //checksum.write(memory.as_bytes());
-                        }
-                        EVMLog::Ouptut { .. } => (),
-                    }
+                    /*if pos == &mut type_hash.t1 {
+                        pos = &mut type_hash.t2;
+                    } else {
+                        // we alrady have two params.
+                        break;
+                    }*/
+                    pos = &mut type_hash.t2;
                 }
-                EVMLog::Error { error, .. } => {
-                    if error.len() > 0 {
-                        is_error = true;
-                    }
+
+                let memory = curr.memory.as_ref().unwrap();
+                if memory.len() > 2 {
+                    *pos |= 6;
                 }
-                _ => (),
             }
             // Todo: write log to somewhere?
-            // Tdoo2: Find out if interesting.
 
             let arr = type_hash.pack().unwrap();
             let idx = (((arr[0] as u16) << 8) | arr[1] as u16) as usize;
@@ -461,11 +451,11 @@ fn observer_hash(stdout_observer: &StdOutObserver) -> u64 {
     let mut is_error = false;
     let mut checksum = AHasher::default();
 
-    eprintln!(
+    /*eprintln!(
         ">>> {} {}",
         stdout_observer.name(),
         &stdout_observer.stdout.as_ref().unwrap()
-    );
+    );*/
     let stdout = stdout_observer.stdout.as_ref().unwrap();
     let json_log: Vec<EVMLog> = stdout
         .split('\n')
@@ -474,41 +464,40 @@ fn observer_hash(stdout_observer: &StdOutObserver) -> u64 {
         .filter(|x| x.is_ok())
         .map(|res| res.unwrap())
         .collect();
-    eprintln!("JSON {:?}", &json_log);
+    //eprintln!("JSON {:?}", &json_log);
 
     for window in json_log.as_slice().windows(2) {
         let curr = &window[0];
         let next = &window[1];
+        if curr.op.is_none() {
+            continue;
+        }
+        let op = curr.op.unwrap();
+        if op == 253 || op == 0 {
+            // ignore REVERT opcode
+            continue;
+        }
+        if curr.gas_cost.is_none() {
+            continue;
+        }
+        if (next.error.is_some() && next.error.as_ref().unwrap().len() > 0)
+            && (next.op.is_none() || next.output.is_some())
+        {
+            is_error = true;
+        } else if curr.error.is_some() && curr.error.as_ref().unwrap().len() > 0 {
+            is_error = true;
+        } else if curr.stack.is_some() && next.op.is_some() && next.op.unwrap() != 0 {
+            for item in curr.stack.as_ref().unwrap().iter().rev() {
+                checksum.write(item.as_bytes());
+            }
+            let memory = curr.memory.as_ref().unwrap();
+            checksum.write(memory.trim_end_matches('0').as_bytes());
 
-        match curr {
-            EVMLog::Operation { op, .. } if *op == 253 => {
-                // ignore REVERT opcode
-                continue;
-            }
-            EVMLog::Operation { op, gas_cost, .. } => {
-                checksum.write(&[*op]);
-                checksum.write(gas_cost.as_bytes());
-                match next {
-                    EVMLog::Error { error, .. } => {
-                        is_error = true;
-                    }
-                    EVMLog::Operation {
-                        memory, op, stack, ..
-                    } => {
-                        for item in stack {
-                            checksum.write(item.as_bytes());
-                        }
-                        checksum.write(memory.as_bytes());
-                    }
-                    EVMLog::Ouptut { .. } => (),
-                }
-            }
-            EVMLog::Error { error, .. } => {
-                if error.len() > 0 {
-                    is_error = true;
-                }
-            }
-            _ => (),
+            checksum.write(&[op]);
+            checksum.write(curr.gas_cost.as_ref().unwrap().as_bytes());
+        } else {
+            checksum.write(&[op]);
+            checksum.write(curr.gas_cost.as_ref().unwrap().as_bytes());
         }
     }
 
@@ -544,17 +533,23 @@ pub fn main() {
     let stdout1 = StdOutObserver::new("StdOutObserver1".into());
     let stdout2 = StdOutObserver::new("StdOutObserver2".into());
 
-    let mut objective = DiffFeedback::new("differ", &stdout1, &stdout2, |o1, o2| {
+    let mut diff_feedback = DiffFeedback::new("differ", &stdout1, &stdout2, |o1, o2| {
         if observer_hash(o1) == observer_hash(o2) {
             DiffResult::Equal
         } else {
             eprintln!("DIFFFFFF");
+            eprintln!(">>> {} {}", o1.name(), &o1.stdout.as_ref().unwrap());
+            eprintln!(">>> {} {}", o2.name(), &o2.stdout.as_ref().unwrap());
             DiffResult::Diff
         }
     })
     .unwrap();
 
-    let mut th_feedback = EVMTypeHashFeedback::new("evm_typehash", &stdout1);
+    let mut obj_dedup = EVMTypeHashFeedback::new("dedup", &stdout1);
+    let mut objective = feedback_and_fast!(diff_feedback, obj_dedup);
+    //let mut objective = diff_feedback;
+
+    let mut th_feedback = EVMTypeHashFeedback::new("typehash", &stdout1);
 
     // If not restarting, create a State from scratch
     let mut state = //state.unwrap_or_else(|| {
