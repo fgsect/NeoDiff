@@ -307,7 +307,7 @@ struct EVMLog {
     extra: std::collections::HashMap<String, serde_json::Value>,
 }
 
-#[derive(PackedStruct, Clone, Default)]
+#[derive(Hash, PartialEq, Eq, PackedStruct, Clone, Default)]
 #[packed_struct(bit_numbering = "msb0")]
 pub struct TypeHash {
     #[packed_field(bits = "0")]
@@ -501,8 +501,8 @@ where
     }
 }
 
-static mut DIFFING_HASHES: Option<HashSet<u64>> = None;
-static mut OPCODES: Option<HashSet<String>> = None;
+static mut DIFFING_HASHES: Option<HashSet<(TypeHash, TypeHash)>> = None;
+static mut OPCODES: Option<HashSet<u64>> = None;
 
 fn observers_cmp(ob1: &StdOutObserver, ob2: &StdOutObserver) -> bool {
     let mut data = vec![];
@@ -681,15 +681,22 @@ fn observers_cmp(ob1: &StdOutObserver, ob2: &StdOutObserver) -> bool {
             let (ck1, th1, err1, op1) = data[i].clone();
 
             if ((!err1 || !is_error) && ck1 != ck) || (err1 && !is_error) || (!err1 && is_error) {
-                unsafe { TYPE_HASHES = (th1, type_hash) };
+                let t = (th1.clone(), type_hash.clone());
 
-                if op1 == op {
-                    unsafe {
-                        OPCODES.as_mut().unwrap().insert(format!("{}", op as usize));
+                unsafe {
+                    if !DIFFING_HASHES.as_ref().unwrap().contains(&t) {
+                        TYPE_HASHES = (th1.clone(), type_hash.clone());
+                        DIFFING_HASHES.as_mut().unwrap().insert(t);
+
+                        if op1 == op {
+                            OPCODES.as_mut().unwrap().insert(op as u64);
+                        }
+
+                        return true;
+                    } else {
+                        return false;
                     }
                 }
-
-                return true;
             }
         }
 
@@ -698,63 +705,6 @@ fn observers_cmp(ob1: &StdOutObserver, ob2: &StdOutObserver) -> bool {
 
     false
 }
-
-/*fn observer_hash(stdout_observer: &StdOutObserver) -> (u64, bool) {
-    let mut is_error = false;
-    let mut checksum = AHasher::default();
-
-    /*eprintln!(
-        ">>> {} {}",
-        stdout_observer.name(),
-        &stdout_observer.stdout.as_ref().unwrap()
-    );*/
-    let stdout = stdout_observer.stdout.as_ref().unwrap();
-    let json_log: Vec<EVMLog> = stdout
-        .split('\n')
-        //.map(|line| { let x = serde_json::from_str(line); eprintln!("{:?} {}", &x, line); x })
-        .map(|line| serde_json::from_str(line))
-        .filter(|x| x.is_ok())
-        .map(|res| res.unwrap())
-        .collect();
-    //eprintln!("JSON {:?}", &json_log);
-
-    for window in json_log.as_slice().windows(2) {
-        let curr = &window[0];
-        let next = &window[1];
-        if curr.op.is_none() {
-            continue;
-        }
-        let op = curr.op.unwrap();
-        if op == 253 || op == 0 {
-            // ignore REVERT opcode
-            continue;
-        }
-        if curr.gas_cost.is_none() {
-            continue;
-        }
-        if (next.error.is_some() && next.error.as_ref().unwrap().len() > 0)
-            && (next.op.is_none() || next.output.is_some())
-        {
-            is_error = true;
-        } else if curr.error.is_some() && curr.error.as_ref().unwrap().len() > 0 {
-            is_error = true;
-        } else if next.stack.is_some() && next.op.is_some() && next.op.unwrap() != 0 {
-            for item in next.stack.as_ref().unwrap().iter().rev() {
-                checksum.write(item.as_bytes());
-            }
-            let memory = curr.memory.as_ref().unwrap();
-            checksum.write(memory.trim_end_matches('0').as_bytes());
-
-            checksum.write(&[op]);
-            checksum.write(curr.gas_cost.as_ref().unwrap().as_bytes());
-        } else {
-            checksum.write(&[op]);
-            checksum.write(curr.gas_cost.as_ref().unwrap().as_bytes());
-        }
-    }
-
-    (checksum.finish(), is_error)
-}*/
 
 /// The main fn, `no_mangle` as it is a C symbol
 pub fn main() {
@@ -784,7 +734,9 @@ pub fn main() {
     let shmem_provider = StdShMemProvider::new().expect("Failed to init shared memory");
 
     let monitor = MultiMonitor::new(|s| {
-        println!("{}, diffing: {:?}", s, unsafe { OPCODES.as_ref().unwrap() })
+        println!("{}, diffing: {:x?}", s, unsafe {
+            OPCODES.as_ref().unwrap()
+        })
     });
     let mut mgr = SimpleEventManager::new(monitor);
 
