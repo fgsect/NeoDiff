@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json;
 use std::{
     cmp::min,
-    collections::BTreeMap,
+    collections::{BTreeMap, HashSet},
     env,
     fs::File,
     hash::Hasher,
@@ -144,6 +144,20 @@ pub struct HexInput {
 
 static mut EXECS: usize = 0;
 static mut START_TIME: Duration = Duration::from_secs(0);
+static mut TYPE_HASHES: (TypeHash, TypeHash) = (
+    TypeHash {
+        mem_flag: false,
+        t1: 0,
+        t2: 0,
+        opcode: 0,
+    },
+    TypeHash {
+        mem_flag: false,
+        t1: 0,
+        t2: 0,
+        opcode: 0,
+    },
+);
 
 impl Input for HexInput {
     #[cfg(feature = "std")]
@@ -169,12 +183,11 @@ impl Input for HexInput {
 
     /// Generate a name for this input
     fn generate_name(&self, _idx: usize) -> String {
-        let mut hasher = AHasher::new_with_keys(0, 0);
-        hasher.write(self.bytes());
         unsafe {
             format!(
-                "{:016x}_time:{}_execs:{}",
-                hasher.finish(),
+                "typehash_{}-{}_time:{}_execs:{}",
+                TYPE_HASHES.0.tostr(),
+                TYPE_HASHES.1.tostr(),
                 (current_time() - START_TIME).as_secs(),
                 EXECS
             )
@@ -304,11 +317,28 @@ pub struct TypeHash {
     #[packed_field(bits = "5..=7")]
     t2: u8,
     #[packed_field(bits = "8..=15")]
-    opccode: u8,
+    opcode: u8,
+}
+
+impl TypeHash {
+    fn tostr(&self) -> String {
+        let mut s = format!("{}_", self.opcode as usize);
+        if self.t1 != 0 {
+            s += &format!("{}", self.t1 as usize);
+        }
+        if self.t2 != 0 {
+            s += &format!("{}", self.t2 as usize);
+        }
+        if self.mem_flag {
+            s += "6";
+        }
+        s
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct EVMTypeHashFeedback {
+    no_errors: bool,
     name: String,
     stdout_name: String,
 }
@@ -320,8 +350,9 @@ impl Named for EVMTypeHashFeedback {
 }
 
 impl EVMTypeHashFeedback {
-    pub fn new(name: &str, stdout: &StdOutObserver) -> Self {
+    pub fn new(name: &str, no_errors: bool, stdout: &StdOutObserver) -> Self {
         Self {
+            no_errors,
             name: name.to_string(),
             stdout_name: stdout.name().to_string(),
         }
@@ -365,7 +396,7 @@ where
 
         // generate a filename
         //let mut checksum = AHasher::default();
-        let mut res = false;
+        let mut idxs = vec![];
 
         let stdout_observer = observers
             .match_name::<StdOutObserver>(&self.stdout_name)
@@ -396,7 +427,8 @@ where
             }
             // update hash
 
-            let mut type_hash = TypeHash::default();
+            let mut types_vec = vec![];
+            let mut mem_flag = false;
 
             if (next.error.is_some() && next.error.as_ref().unwrap().len() > 0)
                 && (next.op.is_none() || next.output.is_some())
@@ -404,42 +436,54 @@ where
                 is_error = true;
             } else if curr.error.is_some() && curr.error.as_ref().unwrap().len() > 0 {
                 is_error = true;
-            } else if curr.stack.is_some() && next.op.is_some() && next.op.unwrap() != 0 {
-                let mut pos = &mut type_hash.t1;
-                for item in curr.stack.as_ref().unwrap().iter().rev() {
+            } else if next.stack.is_some() && next.op.is_some() && next.op.unwrap() != 0 {
+                for item in next.stack.as_ref().unwrap().iter().rev() {
                     //checksum.write(item.as_bytes());
-                    if u32::from_str_radix(item, 16).is_ok() {
-                        *pos = 1;
-                    } else if item.len() == 40 || item.len() == 42 {
-                        *pos = 2;
-                    } else if item.len() > 42 {
-                        *pos = 3;
-                    // ignoring elif len(item) <= 0xFFFFFFFFFFFFFFFF:
-                    } else if item.len() < 40 {
-                        *pos = 5;
+                    if types_vec.len() < 2 {
+                        if u32::from_str_radix(item, 16).is_ok() {
+                            types_vec.push(1);
+                        } else if item.len() == 40 || item.len() == 42 {
+                            types_vec.push(2);
+                        } else if item.len() > 42 {
+                            types_vec.push(3);
+                        // ignoring elif len(item) <= 0xFFFFFFFFFFFFFFFF:
+                        } else if item.len() < 40 {
+                            types_vec.push(5);
+                        }
                     }
-
-                    /*if pos == &mut type_hash.t1 {
-                        pos = &mut type_hash.t2;
-                    } else {
-                        // we alrady have two params.
-                        break;
-                    }*/
-                    pos = &mut type_hash.t2;
                 }
 
                 let memory = curr.memory.as_ref().unwrap();
                 if memory.len() > 2 {
-                    *pos |= 6;
+                    mem_flag = true;
                 }
             }
             // Todo: write log to somewhere?
+            while types_vec.len() < 2 {
+                types_vec.push(0);
+            }
+
+            let type_hash = TypeHash {
+                mem_flag,
+                t1: types_vec[0],
+                t2: types_vec[1],
+                opcode: op,
+            };
 
             let arr = type_hash.pack().unwrap();
             let idx = (((arr[0] as u16) << 8) | arr[1] as u16) as usize;
 
-            // eprintln!("IDX {} {}", idx, feedback_state.history.get(idx).unwrap());
+            idxs.push((idx, type_hash));
 
+            // eprintln!("IDX {} {}", idx, feedback_state.history.get(idx).unwrap());
+        }
+
+        if is_error && self.no_errors {
+            return Ok(false);
+        }
+
+        let mut res = false;
+        for (idx, type_hash) in idxs {
             if feedback_state.history.get(idx).unwrap() == false {
                 res = true;
                 feedback_state.history.set(idx, true);
@@ -457,7 +501,205 @@ where
     }
 }
 
-fn observer_hash(stdout_observer: &StdOutObserver) -> u64 {
+static mut DIFFING_HASHES: Option<HashSet<u64>> = None;
+static mut OPCODES: Option<HashSet<String>> = None;
+
+fn observers_cmp(ob1: &StdOutObserver, ob2: &StdOutObserver) -> bool {
+    let mut data = vec![];
+
+    let mut is_error = false;
+    let mut checksum = AHasher::default();
+
+    /*eprintln!(
+        ">>> {} {}",
+        stdout_observer.name(),
+        &stdout_observer.stdout.as_ref().unwrap()
+    );*/
+    let stdout = ob1.stdout.as_ref().unwrap();
+    let json_log: Vec<EVMLog> = stdout
+        .split('\n')
+        //.map(|line| { let x = serde_json::from_str(line); eprintln!("{:?} {}", &x, line); x })
+        .map(|line| serde_json::from_str(line))
+        .filter(|x| x.is_ok())
+        .map(|res| res.unwrap())
+        .collect();
+    //eprintln!("JSON {:?}", &json_log);
+
+    for window in json_log.as_slice().windows(2) {
+        let curr = &window[0];
+        let next = &window[1];
+        if curr.op.is_none() {
+            continue;
+        }
+        let op = curr.op.unwrap();
+        if op == 253 || op == 0 {
+            // ignore REVERT opcode
+            continue;
+        }
+        if curr.gas_cost.is_none() {
+            continue;
+        }
+
+        let mut types_vec = vec![];
+        let mut mem_flag = false;
+
+        if (next.error.is_some() && next.error.as_ref().unwrap().len() > 0)
+            && (next.op.is_none() || next.output.is_some())
+        {
+            is_error = true;
+        } else if curr.error.is_some() && curr.error.as_ref().unwrap().len() > 0 {
+            is_error = true;
+        } else if next.stack.is_some() && next.op.is_some() && next.op.unwrap() != 0 {
+            for item in next.stack.as_ref().unwrap().iter().rev() {
+                checksum.write(item.as_bytes());
+                if types_vec.len() < 2 {
+                    if u32::from_str_radix(item, 16).is_ok() {
+                        types_vec.push(1);
+                    } else if item.len() == 40 || item.len() == 42 {
+                        types_vec.push(2);
+                    } else if item.len() > 42 {
+                        types_vec.push(3);
+                    // ignoring elif len(item) <= 0xFFFFFFFFFFFFFFFF:
+                    } else if item.len() < 40 {
+                        types_vec.push(5);
+                    }
+                }
+            }
+            let memory = curr.memory.as_ref().unwrap();
+            checksum.write(memory.trim_end_matches('0').as_bytes());
+            if memory.len() > 2 {
+                mem_flag = true;
+            }
+
+            checksum.write(&[op]);
+            checksum.write(curr.gas_cost.as_ref().unwrap().as_bytes());
+        } else {
+            checksum.write(&[op]);
+            checksum.write(curr.gas_cost.as_ref().unwrap().as_bytes());
+        }
+
+        while types_vec.len() < 2 {
+            types_vec.push(0);
+        }
+
+        let type_hash = TypeHash {
+            mem_flag,
+            t1: types_vec[0],
+            t2: types_vec[1],
+            opcode: op,
+        };
+
+        data.push((checksum.finish(), type_hash, is_error, op));
+    }
+
+    let mut is_error = false;
+    let mut checksum = AHasher::default();
+
+    /*eprintln!(
+        ">>> {} {}",
+        stdout_observer.name(),
+        &stdout_observer.stdout.as_ref().unwrap()
+    );*/
+    let stdout = ob2.stdout.as_ref().unwrap();
+    let json_log: Vec<EVMLog> = stdout
+        .split('\n')
+        //.map(|line| { let x = serde_json::from_str(line); eprintln!("{:?} {}", &x, line); x })
+        .map(|line| serde_json::from_str(line))
+        .filter(|x| x.is_ok())
+        .map(|res| res.unwrap())
+        .collect();
+    //eprintln!("JSON {:?}", &json_log);
+
+    let mut i = 0;
+    for window in json_log.as_slice().windows(2) {
+        let curr = &window[0];
+        let next = &window[1];
+        if curr.op.is_none() {
+            continue;
+        }
+        let op = curr.op.unwrap();
+        if op == 253 || op == 0 {
+            // ignore REVERT opcode
+            continue;
+        }
+        if curr.gas_cost.is_none() {
+            continue;
+        }
+
+        let mut types_vec = vec![];
+        let mut mem_flag = false;
+
+        if (next.error.is_some() && next.error.as_ref().unwrap().len() > 0)
+            && (next.op.is_none() || next.output.is_some())
+        {
+            is_error = true;
+        } else if curr.error.is_some() && curr.error.as_ref().unwrap().len() > 0 {
+            is_error = true;
+        } else if next.stack.is_some() && next.op.is_some() && next.op.unwrap() != 0 {
+            for item in next.stack.as_ref().unwrap().iter().rev() {
+                checksum.write(item.as_bytes());
+                if types_vec.len() < 2 {
+                    if u32::from_str_radix(item, 16).is_ok() {
+                        types_vec.push(1);
+                    } else if item.len() == 40 || item.len() == 42 {
+                        types_vec.push(2);
+                    } else if item.len() > 42 {
+                        types_vec.push(3);
+                    // ignoring elif len(item) <= 0xFFFFFFFFFFFFFFFF:
+                    } else if item.len() < 40 {
+                        types_vec.push(5);
+                    }
+                }
+            }
+            let memory = curr.memory.as_ref().unwrap();
+            checksum.write(memory.trim_end_matches('0').as_bytes());
+            if memory.len() > 2 {
+                mem_flag = true;
+            }
+
+            checksum.write(&[op]);
+            checksum.write(curr.gas_cost.as_ref().unwrap().as_bytes());
+        } else {
+            checksum.write(&[op]);
+            checksum.write(curr.gas_cost.as_ref().unwrap().as_bytes());
+        }
+
+        while types_vec.len() < 2 {
+            types_vec.push(0);
+        }
+
+        let type_hash = TypeHash {
+            mem_flag,
+            t1: types_vec[0],
+            t2: types_vec[1],
+            opcode: op,
+        };
+
+        if i < data.len() {
+            let ck = checksum.finish();
+
+            let (ck1, th1, err1, op1) = data[i].clone();
+
+            if ((!err1 || !is_error) && ck1 != ck) || (err1 && !is_error) || (!err1 && is_error) {
+                unsafe { TYPE_HASHES = (th1, type_hash) };
+
+                if op1 == op {
+                    unsafe {
+                        OPCODES.as_mut().unwrap().insert(format!("{}", op as usize));
+                    }
+                }
+
+                return true;
+            }
+        }
+
+        i += 1;
+    }
+
+    false
+}
+
+/*fn observer_hash(stdout_observer: &StdOutObserver) -> (u64, bool) {
     let mut is_error = false;
     let mut checksum = AHasher::default();
 
@@ -496,8 +738,8 @@ fn observer_hash(stdout_observer: &StdOutObserver) -> u64 {
             is_error = true;
         } else if curr.error.is_some() && curr.error.as_ref().unwrap().len() > 0 {
             is_error = true;
-        } else if curr.stack.is_some() && next.op.is_some() && next.op.unwrap() != 0 {
-            for item in curr.stack.as_ref().unwrap().iter().rev() {
+        } else if next.stack.is_some() && next.op.is_some() && next.op.unwrap() != 0 {
+            for item in next.stack.as_ref().unwrap().iter().rev() {
                 checksum.write(item.as_bytes());
             }
             let memory = curr.memory.as_ref().unwrap();
@@ -511,8 +753,8 @@ fn observer_hash(stdout_observer: &StdOutObserver) -> u64 {
         }
     }
 
-    checksum.finish()
-}
+    (checksum.finish(), is_error)
+}*/
 
 /// The main fn, `no_mangle` as it is a C symbol
 pub fn main() {
@@ -523,6 +765,9 @@ pub fn main() {
     let workdir = env::current_dir().unwrap();
 
     let opt = Opt::parse();
+
+    unsafe { OPCODES = Some(HashSet::new()) };
+    unsafe { DIFFING_HASHES = Some(HashSet::new()) };
 
     //let cores = opt.cores;
     //let broker_port = opt.broker_port;
@@ -538,7 +783,9 @@ pub fn main() {
 
     let shmem_provider = StdShMemProvider::new().expect("Failed to init shared memory");
 
-    let monitor = MultiMonitor::new(|s| println!("{}", s));
+    let monitor = MultiMonitor::new(|s| {
+        println!("{}, diffing: {:?}", s, unsafe { OPCODES.as_ref().unwrap() })
+    });
     let mut mgr = SimpleEventManager::new(monitor);
 
     //let mut run_client = |state: Option<StdState<_, _, _, _, _, _>>, mut mgr, _core_id| {
@@ -547,22 +794,22 @@ pub fn main() {
 
     let mut diff_feedback = DiffFeedback::new("differ", &stdout1, &stdout2, |o1, o2| {
         unsafe { EXECS += 1 };
-        if observer_hash(o1) == observer_hash(o2) {
-            DiffResult::Equal
-        } else {
+        if observers_cmp(o1, o2) {
             //eprintln!("DIFFFFFF");
             //eprintln!(">>> {} {}", o1.name(), &o1.stdout.as_ref().unwrap());
             //eprintln!(">>> {} {}", o2.name(), &o2.stdout.as_ref().unwrap());
             DiffResult::Diff
+        } else {
+            DiffResult::Equal
         }
     })
     .unwrap();
 
-    let mut obj_dedup = EVMTypeHashFeedback::new("dedup", &stdout1);
-    let mut objective = feedback_and_fast!(diff_feedback, obj_dedup);
-    //let mut objective = diff_feedback;
+    //let mut obj_dedup = EVMTypeHashFeedback::new("dedup", false, &stdout1);
+    //let mut objective = feedback_and_fast!(diff_feedback, obj_dedup);
+    let mut objective = diff_feedback;
 
-    let mut th_feedback = EVMTypeHashFeedback::new("typehash", &stdout1);
+    let mut th_feedback = EVMTypeHashFeedback::new("typehash", true, &stdout1);
 
     // If not restarting, create a State from scratch
     let mut state = //state.unwrap_or_else(|| {
@@ -596,6 +843,7 @@ pub fn main() {
     // A fuzzer with feedbacks and a corpus scheduler
     let mut fuzzer = StdFuzzer::new(scheduler, th_feedback, objective);
 
+    // ./go-ethereum/build/bin/evm --json --sender 0x00 --receiver 0x00 --gas 0x1337 --code 7f30c0b3e1400000004e4e4e4e4e4e2dcecececeffffff7fcece1d3b3b3b3b3b3b3b3b run
     let ce1 = CommandExecutor::builder()
         .program("./go-ethereum/build/bin/evm")
         .args(&[
@@ -614,6 +862,7 @@ pub fn main() {
         .build(tuple_list!(stdout1))
         .unwrap();
 
+    // ./openethereum/target/release/openethereum-evm --chain ./openethereum/crates/ethcore/res/chainspec/test/istanbul_test.json --gas 1337 --json --code 7f30c0b3e1400000004e4e4e4e4e4e2dcecececeffffff7fcece1d3b3b3b3b3b3b3b3b
     let ce2 = CommandExecutor::builder()
         .program("./openethereum/target/release/openethereum-evm")
         .args(&[

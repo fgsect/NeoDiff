@@ -74,8 +74,8 @@ class ENeoDiffConfig(FuzzerConfig):
                             typehash += "2"
                         elif len(item) > 42:
                             typehash += "3"
-                        elif len(item) <= 0xFFFFFFFFFFFFFFFF:
-                            typehash += "4"
+                        #elif len(item) <= 0xFFFFFFFFFFFFFFFF:
+                        #    typehash += "4"
                         elif len(item) < 40:
                             typehash += "5"
                 m.update(out[i + 1]["memory"].rstrip("0").encode("ascii"))

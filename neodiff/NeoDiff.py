@@ -297,7 +297,7 @@ class FuzzerConfig:
 
             for exec_nr in range(0, self.roundsize):
                 if exec_nr % 100 == 0:
-                    logger.info("{}. {}/{}".format(round_nr, exec_nr, self.roundsize))
+                    logger.info("{}. {}/{} -- {}".format(round_nr, exec_nr, self.roundsize, self.logger_execs))
 
                 # open('/tmp/trace_now', 'a').close()
                 ############### RUN THE VMS ###############
@@ -347,13 +347,19 @@ class FuzzerConfig:
                         logger.info(vm1)
                         logger.info(vm2)
 
-                        diff_fname = "RESULTS/{}/diffs/typehash_{}-{}_time:{}_execs:{}".format(
+                        diff_fname = "RESULTS/{}/diffs/typehash_{}-{}".format(
                             self.name, get_typehash(vm1), get_typehash(vm2),
-                            int(time.time() - start_time_campaign),
-                            self.logger_execs
                         )
                         if not os.path.isfile(diff_fname):
                             self.stats["diffs_new"] += 1
+                            
+                            fname = "RESULTS/{}/dedups/typehash_{}-{}_time:{}_execs:{}".format(
+                                self.name, get_typehash(vm1), get_typehash(vm2),
+                                int(time.time() - start_time_campaign),
+                                self.logger_execs
+                            )
+                            with open_create(fname, "wb") as f:
+                                f.write(bytearray.fromhex(self.vm1.code))
 
                         self.stats["diffs"] += 1
                         with open_create(diff_fname, "a+") as f:
