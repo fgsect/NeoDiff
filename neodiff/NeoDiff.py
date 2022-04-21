@@ -166,6 +166,7 @@ class FuzzerConfig:
         self.vm1_queue = []
         self.vm2_queue = []
         self.clean_exit_opcode = None
+        self.logger_execs = 0
 
     def sync_fuzzers(self):
         # logger.info(self.stats)
@@ -238,6 +239,7 @@ class FuzzerConfig:
         vm1_out = self.vm1.run_vm(vm1_code)
         vm2_out = self.vm2.run_vm(vm2_code)
         self.stats["execs"] += 2
+        self.logger_execs += 1
         vm1_out_clean = self.clean_vm1_out(vm1_out)
         vm2_out_clean = self.clean_vm2_out(vm2_out)
         return (vm1_out_clean, vm2_out_clean)
@@ -280,6 +282,7 @@ class FuzzerConfig:
             self.new_typehash_map[typehash].append(new_coverage)
 
     def fuzz(self):
+        start_time_campaign = time.time()
         loop = True
         round_nr = 0
         self.sync_fuzzers()
@@ -344,8 +347,10 @@ class FuzzerConfig:
                         logger.info(vm1)
                         logger.info(vm2)
 
-                        diff_fname = "RESULTS/{}/diffs/typehash_{}-{}".format(
-                            self.name, get_typehash(vm1), get_typehash(vm2)
+                        diff_fname = "RESULTS/{}/diffs/typehash_{}-{}_time:{}_execs:{}".format(
+                            self.name, get_typehash(vm1), get_typehash(vm2),
+                            int(time.time() - start_time_campaign),
+                            self.logger_execs
                         )
                         if not os.path.isfile(diff_fname):
                             self.stats["diffs_new"] += 1

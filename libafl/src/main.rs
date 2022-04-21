@@ -25,7 +25,7 @@ use std::{
 
 use libafl::{
     bolts::{
-        current_nanos,
+        current_nanos, current_time,
         fs::write_file_atomic,
         launcher::Launcher,
         os::Cores,
@@ -142,6 +142,9 @@ pub struct HexInput {
     bytes: Vec<u8>,
 }
 
+static mut EXECS: usize = 0;
+static mut START_TIME: Duration = Duration::from_secs(0);
+
 impl Input for HexInput {
     #[cfg(feature = "std")]
     /// Write this input to the file
@@ -168,7 +171,14 @@ impl Input for HexInput {
     fn generate_name(&self, _idx: usize) -> String {
         let mut hasher = AHasher::new_with_keys(0, 0);
         hasher.write(self.bytes());
-        format!("{:016x}", hasher.finish())
+        unsafe {
+            format!(
+                "{:016x}_time:{}_execs:{}",
+                hasher.finish(),
+                (current_time() - START_TIME).as_secs(),
+                EXECS
+            )
+        }
     }
 }
 
@@ -524,6 +534,8 @@ pub fn main() {
 
     println!("Workdir: {:?}", workdir.to_string_lossy().to_string());
 
+    unsafe { START_TIME = current_time() };
+
     let shmem_provider = StdShMemProvider::new().expect("Failed to init shared memory");
 
     let monitor = MultiMonitor::new(|s| println!("{}", s));
@@ -534,12 +546,13 @@ pub fn main() {
     let stdout2 = StdOutObserver::new("StdOutObserver2".into());
 
     let mut diff_feedback = DiffFeedback::new("differ", &stdout1, &stdout2, |o1, o2| {
+        unsafe { EXECS += 1 };
         if observer_hash(o1) == observer_hash(o2) {
             DiffResult::Equal
         } else {
-            eprintln!("DIFFFFFF");
-            eprintln!(">>> {} {}", o1.name(), &o1.stdout.as_ref().unwrap());
-            eprintln!(">>> {} {}", o2.name(), &o2.stdout.as_ref().unwrap());
+            //eprintln!("DIFFFFFF");
+            //eprintln!(">>> {} {}", o1.name(), &o1.stdout.as_ref().unwrap());
+            //eprintln!(">>> {} {}", o2.name(), &o2.stdout.as_ref().unwrap());
             DiffResult::Diff
         }
     })
