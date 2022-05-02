@@ -133,6 +133,14 @@ struct Opt {
         multiple_occurrences = true
     )]
     tokens: Vec<PathBuf>,
+
+    #[clap(
+        short,
+        long,
+        help = "no fuzz",
+        name = "NOFUZZ",
+    )]
+    nofuzz: bool,
 }
 
 /// A bytes input is the basic input
@@ -144,7 +152,7 @@ pub struct HexInput {
 
 static mut EXECS: usize = 0;
 static mut START_TIME: Duration = Duration::from_secs(0);
-static mut TYPE_HASHES: (TypeHash, TypeHash) = (
+static mut TYPE_HASHES: (TypeHash, TypeHash, u64, u64) = (
     TypeHash {
         mem_flag: false,
         t1: 0,
@@ -157,6 +165,7 @@ static mut TYPE_HASHES: (TypeHash, TypeHash) = (
         t2: 0,
         opcode: 0,
     },
+    0,0
 );
 
 impl Input for HexInput {
@@ -185,9 +194,11 @@ impl Input for HexInput {
     fn generate_name(&self, _idx: usize) -> String {
         unsafe {
             format!(
-                "typehash_{}-{}_time:{}_execs:{}",
+                "typehash_{}-{}_pc:{}-{}_time:{}_execs:{}",
                 TYPE_HASHES.0.tostr(),
                 TYPE_HASHES.1.tostr(),
+                TYPE_HASHES.2,
+                TYPE_HASHES.3,
                 (current_time() - START_TIME).as_secs(),
                 EXECS
             )
@@ -286,7 +297,8 @@ struct EVMLog {
     //depth: u8,
     //gas: String,
     //op_name: String,
-    //pc: u64,
+    #[serde(default)]
+    pc: Option<u64>,
     #[serde(default)]
     error: Option<String>,
     #[serde(default)]
@@ -504,7 +516,7 @@ where
 static mut DIFFING_HASHES: Option<HashSet<(TypeHash, TypeHash)>> = None;
 static mut OPCODES: Option<HashSet<u64>> = None;
 
-fn observers_cmp(ob1: &StdOutObserver, ob2: &StdOutObserver) -> bool {
+fn observers_cmp(stdout1: &str, stdout2: &str) -> bool {
     let mut data = vec![];
 
     let mut is_error = false;
@@ -515,8 +527,7 @@ fn observers_cmp(ob1: &StdOutObserver, ob2: &StdOutObserver) -> bool {
         stdout_observer.name(),
         &stdout_observer.stdout.as_ref().unwrap()
     );*/
-    let stdout = ob1.stdout.as_ref().unwrap();
-    let json_log: Vec<EVMLog> = stdout
+    let json_log: Vec<EVMLog> = stdout1
         .split('\n')
         //.map(|line| { let x = serde_json::from_str(line); eprintln!("{:?} {}", &x, line); x })
         .map(|line| serde_json::from_str(line))
@@ -539,6 +550,7 @@ fn observers_cmp(ob1: &StdOutObserver, ob2: &StdOutObserver) -> bool {
         if curr.gas_cost.is_none() {
             continue;
         }
+        let pc = curr.pc.unwrap();
 
         let mut types_vec = vec![];
         let mut mem_flag = false;
@@ -589,7 +601,7 @@ fn observers_cmp(ob1: &StdOutObserver, ob2: &StdOutObserver) -> bool {
             opcode: op,
         };
 
-        data.push((checksum.finish(), type_hash, is_error, op));
+        data.push((checksum.finish(), type_hash, is_error, op, pc));
     }
 
     let mut is_error = false;
@@ -600,8 +612,7 @@ fn observers_cmp(ob1: &StdOutObserver, ob2: &StdOutObserver) -> bool {
         stdout_observer.name(),
         &stdout_observer.stdout.as_ref().unwrap()
     );*/
-    let stdout = ob2.stdout.as_ref().unwrap();
-    let json_log: Vec<EVMLog> = stdout
+    let json_log: Vec<EVMLog> = stdout2
         .split('\n')
         //.map(|line| { let x = serde_json::from_str(line); eprintln!("{:?} {}", &x, line); x })
         .map(|line| serde_json::from_str(line))
@@ -625,6 +636,7 @@ fn observers_cmp(ob1: &StdOutObserver, ob2: &StdOutObserver) -> bool {
         if curr.gas_cost.is_none() {
             continue;
         }
+        let pc = curr.pc.unwrap();
 
         let mut types_vec = vec![];
         let mut mem_flag = false;
@@ -678,14 +690,14 @@ fn observers_cmp(ob1: &StdOutObserver, ob2: &StdOutObserver) -> bool {
         if i < data.len() {
             let ck = checksum.finish();
 
-            let (ck1, th1, err1, op1) = data[i].clone();
+            let (ck1, th1, err1, op1, pc1) = data[i].clone();
 
             if ((!err1 || !is_error) && ck1 != ck) || (err1 && !is_error) || (!err1 && is_error) {
                 let t = (th1.clone(), type_hash.clone());
 
                 unsafe {
                     if !DIFFING_HASHES.as_ref().unwrap().contains(&t) {
-                        TYPE_HASHES = (th1.clone(), type_hash.clone());
+                        TYPE_HASHES = (th1.clone(), type_hash.clone(), pc1, pc);
                         DIFFING_HASHES.as_mut().unwrap().insert(t);
 
                         if op1 == op {
@@ -719,6 +731,8 @@ pub fn main() {
     unsafe { OPCODES = Some(HashSet::new()) };
     unsafe { DIFFING_HASHES = Some(HashSet::new()) };
 
+
+
     //let cores = opt.cores;
     //let broker_port = opt.broker_port;
     //let remote_broker_addr = opt.remote_broker_addr;
@@ -746,7 +760,7 @@ pub fn main() {
 
     let mut diff_feedback = DiffFeedback::new("differ", &stdout1, &stdout2, |o1, o2| {
         unsafe { EXECS += 1 };
-        if observers_cmp(o1, o2) {
+        if observers_cmp(o1.stdout.as_ref().unwrap(), o2.stdout.as_ref().unwrap()) {
             //eprintln!("DIFFFFFF");
             //eprintln!(">>> {} {}", o1.name(), &o1.stdout.as_ref().unwrap());
             //eprintln!(">>> {} {}", o2.name(), &o2.stdout.as_ref().unwrap());
@@ -867,6 +881,10 @@ pub fn main() {
                 .unwrap_or_else(|_| panic!("Failed to load initial corpus at {:?}", &input_dirs));
             println!("We imported {} inputs from disk.", state.corpus().count());
         }
+    }
+
+    if opt.nofuzz {
+        return;
     }
 
     fuzzer
